@@ -11,6 +11,7 @@ from matplotlib.dates import (
     AutoDateFormatter,
 )
 from matplotlib.figure import Figure
+from matplotlib.collections import PathCollection
 from typing import List, Dict, Tuple, Union, Any
 
 # import from package
@@ -22,6 +23,7 @@ from resistics.common.plot import (
     getViewFonts,
     colorbar2dOther,
     colorbar2dTime,
+    dateTicks,
 )
 
 
@@ -73,7 +75,9 @@ class StatisticData(ResisticsBase):
         Initialise maskData
     getStats(includewindows, maskwindows)
         Get the statistics array and choose to either include some windows or mask some windows
-    getMaskedWindows(maskwindows)
+    getIncludeIndices(includeWindows)
+        Return the local indices to use given a set of global indices to include
+    getUnmaskedIndices(maskwindows)
         Return the local indices to use given a set of global indices to exclude
     getStatLocal(localIndex)
         Get statistic values for a local window index
@@ -101,8 +105,6 @@ class StatisticData(ResisticsBase):
         Add a colourbar to a plot    
     addColourbarDates(plot, cax, title, plotfonts)
         Add a coloubar the represents dates to the plot   
-    dateTicks(gIndices, dates, timeNum)
-        Deal with the dateTicks of the plot
     calcColourData(plotData, val, eFreqI, keywords)
         Calculate colours 
     getRowsCols(maxcols, numStats)
@@ -154,6 +156,7 @@ class StatisticData(ResisticsBase):
         self.global2localMap: Dict = {}
         self.comments: List[str] = []
         self.dtype: str = "float"
+        self.stats: Union[np.ndarray, None] = None
         # global dates
         self.globalDatesStarts: Union[List, np.ndarray] = []
         self.globalDatesStops: Union[List, np.ndarray] = []
@@ -195,9 +198,9 @@ class StatisticData(ResisticsBase):
         Parameters
         ----------
         includewindows : List, np.ndarray, optional
-            Windows to get
+            Global windows to include. Useful if passing WindowSelector shared windows.
         maskwindows : List, np.ndarray, optional
-            Windows to exclude
+            Global windows to exclude. Can be used if passing a set of masked windows.
         
         Returns
         -------
@@ -205,18 +208,38 @@ class StatisticData(ResisticsBase):
             Statistics limited by the window selection options
         """
         if len(includewindows) > 0:
-            return self.stats[includewindows, :]
+            includeIndices = self.getIncludeIndices(includewindows)
+            return self.stats[includeIndices, :]
         elif len(maskwindows) > 0:
-            includewindows = self.getMaskedIndices(maskwindows)
-            # if this is false, then want to return all the statistics
-            if includewindows:
-                return self.stats[includewindows, :]
+            includeIndices = self.getUnmaskedIndices(maskwindows)
+            if len(includeIndices) != self.numWindows:
+                return self.stats[includeIndices, :]
         return self.stats
 
-    def getMaskedIndices(
-        self, maskWindows: Union[List, np.ndarray]
-    ) -> Union[List, bool]:
-        """Given a list of global windows to mask, returns the set of indices to include in the plot
+    def getIncludeIndices(
+        self, includeWindows: Union[List, set, np.ndarray]
+    ) -> np.ndarray:
+        """Given a list, set or array of global windows to include, convert this to the local indices to include in the plot
+        
+        Parameters
+        ----------
+        includeWindows: List, set, np.ndarray
+            Global windows to include. For example, shared windows from WindowSelector
+
+        Returns
+        -------
+        np.ndarray
+            Array of local indices to include, sorted in ascending order
+        """
+        includeWindows = set(self.globalIndices).intersection(set(includeWindows))
+        # now convert to local indices
+        indices = []
+        for win in includeWindows:
+            indices.append(self.global2localMap[win])
+        return np.sort(np.array(indices))
+
+    def getUnmaskedIndices(self, maskWindows: Union[List, np.ndarray]) -> np.ndarray:
+        """Given a list of global windows to mask, returns an numpy array of local indices to include in the plot
 
         Parameters
         ----------
@@ -225,18 +248,17 @@ class StatisticData(ResisticsBase):
         
         Returns
         -------
-        List
-            List of indices to include
+        np.ndarray
+            Array of local indices to include, sorted in ascending order
         """
         includeWindows = set(self.globalIndices) - set(maskWindows)
         if len(includeWindows) == self.numWindows:
-            # nothing to mask
-            return False
-
+            # nothing to remove
+            return np.arange(0, self.numWindows)
         indices = []
         for win in includeWindows:
             indices.append(self.global2localMap[win])
-        return indices
+        return np.sort(np.array(indices))
 
     def getStatLocal(self, localIndex: int) -> np.ndarray:
         """Get statistics for a local window index
@@ -296,7 +318,7 @@ class StatisticData(ResisticsBase):
         Returns
         -------
         np.ndarray
-            The global window start times
+            The global window start times in a numpy array
         """
         # want to get the start date for each window here
         if len(self.globalDatesStarts) != self.numWindows:
@@ -420,7 +442,7 @@ class StatisticData(ResisticsBase):
         """
         # get windows to plot and global dates
         maskWindows = kwargs["maskwindows"] if "maskwindows" in kwargs else []
-        plotIndices = self.getMaskedIndices(maskWindows)
+        plotIndices = self.getUnmaskedIndices(maskWindows)
         globalDates = self.getGlobalDates()
         eFreq = self.evalFreq[eFreqI]
 
@@ -445,12 +467,9 @@ class StatisticData(ResisticsBase):
             plt.title("Value {}".format(val), fontsize=plotfonts["title"])
             label = kwargs["label"] if "label" in kwargs else eFreq
 
-            # limit the data by plotIndices if not False
-            plotData = np.squeeze(self.stats[:, eFreqI, idx])
-            plotDates = globalDates
-            if plotIndices:
-                plotData = plotData[plotIndices]
-                plotDates = plotDates[plotIndices]
+            # limit the data by plotIndices
+            plotData = np.squeeze(self.stats[plotIndices, eFreqI, idx])
+            plotDates = globalDates[plotIndices]
 
             # the colourdata
             colourbool, colourdata, cmap = self.calcColourData(
@@ -551,7 +570,7 @@ class StatisticData(ResisticsBase):
         """
         # deal with maskwindows, which are global indices
         maskWindows = kwargs["maskwindows"] if "maskwindows" in kwargs else []
-        plotIndices = self.getMaskedIndices(maskWindows)
+        plotIndices = self.getUnmaskedIndices(maskWindows)
         eFreq = self.evalFreq[eFreqI]
 
         # plot options
@@ -576,11 +595,8 @@ class StatisticData(ResisticsBase):
             plt.title("Value {}".format(val), fontsize=plotfonts["title"])
             label = kwargs["label"] if "label" in kwargs else eFreq
 
-            # data
-            plotData = np.squeeze(self.stats[:, eFreqI, idx])
-            if plotIndices:
-                plotData = plotData[plotIndices]
-            # remove infinities and nans
+            # get the data and remove infinities and nans
+            plotData = np.squeeze(self.stats[plotIndices, eFreqI, idx])
             plotData = plotData[np.isfinite(plotData)]
 
             # x axis options
@@ -656,7 +672,7 @@ class StatisticData(ResisticsBase):
         """
         # deal with maskwindows, which are global indices
         maskWindows = kwargs["maskwindows"] if "maskwindows" in kwargs else []
-        plotIndices = self.getMaskedIndices(maskWindows)
+        plotIndices = self.getUnmaskedIndices(maskWindows)
 
         # figure out the crossplots
         if "crossplots" in kwargs:
@@ -697,13 +713,10 @@ class StatisticData(ResisticsBase):
 
             # get plot data
             plotI1 = self.winStats.index(cplot[0])
-            plotData1 = np.squeeze(self.stats[:, eFreqI, plotI1])
+            plotData1 = np.squeeze(self.stats[plotIndices, eFreqI, plotI1])
             plotI2 = self.winStats.index(cplot[1])
-            plotData2 = np.squeeze(self.stats[:, eFreqI, plotI2])
-            if plotIndices:
-                plotData1 = plotData1[plotIndices]
-                plotData2 = plotData2[plotIndices]
-                colourdata = colourdata[plotIndices]
+            plotData2 = np.squeeze(self.stats[plotIndices, eFreqI, plotI2])
+            colourdata = colourdata[plotIndices]
 
             # scatter plot
             scat = plt.scatter(
@@ -797,7 +810,7 @@ class StatisticData(ResisticsBase):
         """
         # deal with maskwindows, which are global indices
         maskWindows = kwargs["maskwindows"] if "maskwindows" in kwargs else []
-        plotIndices = self.getMaskedIndices(maskWindows)
+        plotIndices = self.getUnmaskedIndices(maskWindows)
 
         # figure out the crossplots
         if "crossplots" in kwargs:
@@ -833,12 +846,9 @@ class StatisticData(ResisticsBase):
 
             # get plot data
             plotI1 = self.winStats.index(cplot[0])
-            plotData1 = np.squeeze(self.stats[:, eFreqI, plotI1])
+            plotData1 = np.squeeze(self.stats[plotIndices, eFreqI, plotI1])
             plotI2 = self.winStats.index(cplot[1])
-            plotData2 = np.squeeze(self.stats[:, eFreqI, plotI2])
-            if plotIndices:
-                plotData1 = plotData1[plotIndices]
-                plotData2 = plotData2[plotIndices]
+            plotData2 = np.squeeze(self.stats[plotIndices, eFreqI, plotI2])
 
             nbins = 200
             if "xlim" in kwargs:
@@ -885,7 +895,9 @@ class StatisticData(ResisticsBase):
 
         return fig
 
-    def addColourbar(self, plot: plt.plot, cax, title: str, plotfonts: Dict) -> None:
+    def addColourbar(
+        self, plot: PathCollection, cax, title: str, plotfonts: Dict
+    ) -> None:
         """Add a colourbar to a plot
 
         Parameters
@@ -902,7 +914,7 @@ class StatisticData(ResisticsBase):
         plt.colorbar(plot, cax=cax)
         cax.set_title(title, y=1.02, fontsize=plotfonts["title"])
 
-    def addColourbarDates(self, plot: plt.plot, cax, title: str, plotfonts: Dict):
+    def addColourbarDates(self, plot: PathCollection, cax, title: str, plotfonts: Dict):
         """Make the colourbar show dates for identifying window times where there is not date axis
 
         Parameters
@@ -916,32 +928,11 @@ class StatisticData(ResisticsBase):
         plotfonts : Dict
             A dictionary with font types as keys and sizes as values
         """
-        ticks, tickLabels = self.dateTicks(self.globalIndices, self.getGlobalDates(), 5)
+        ticks, tickLabels = dateTicks(self.globalIndices, self.getGlobalDates(), 5)
         cb = plt.colorbar(plot, cax=cax)
         cb.set_ticks(ticks)
         cb.set_ticklabels(tickLabels)
         cax.set_title(title, y=1.02, fontsize=plotfonts["title"])
-
-    def dateTicks(self, gIndices, dates, timeNum):
-        """Format dateticks
-        
-        .. todo::
-
-            Write more complete documentation
-        """
-        numVals = len(gIndices)
-        if timeNum >= numVals:
-            timeNum = numVals
-        plotIndices = []
-        for i in range(0, timeNum):
-            plotIndices.append(int(i * numVals * 1.0 / (timeNum - 1)))
-        plotIndices[-1] = numVals - 1
-        ticks = []
-        tickLabels = []
-        for i in plotIndices:
-            ticks.append(gIndices[i])
-            tickLabels.append(dates[i].strftime("%m-%d %H:%M:%S"))
-        return ticks, tickLabels
 
     def calcColourData(self, plotData, val, eFreqI, keywords):
         """Calculate the colour data

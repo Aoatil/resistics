@@ -9,7 +9,7 @@ from matplotlib.dates import (
     AutoDateFormatter,
 )
 from datetime import datetime, timedelta
-from typing import Dict, Tuple
+from typing import Dict, Tuple, Union, List
 
 from resistics.common.checks import parseKeywords
 
@@ -365,6 +365,52 @@ def colorbarMultiline():
         Colormap
     """
     return plt.cm.cividis
+
+
+def dateTicks(
+    gIndices: Union[np.ndarray, List], dates: Union[np.array, List], nticks: int
+) -> Tuple[List[int], List[str]]:
+    """Calculate tick values and labels for use with matplotlib
+
+    Parameters
+    ----------
+    gIndices : np.ndarray, List
+        Global indices in array or List
+    dates : np.ndarray, List
+        Corresponding array of datetimes either in np.datetime64[ns], datetime or str types
+    nticks : int
+        The number of ticks to show
+
+    Returns
+    -------
+    ticks : List[int]
+        The tick values
+    tickLabels : List[str]
+        The corresponding tick labels
+    """
+    numVals = len(gIndices)
+    if nticks >= numVals:
+        nticks = numVals
+    tickIndices = []
+    for i in range(0, nticks):
+        tickIndices.append(int(i * numVals * 1.0 / (nticks - 1)))
+    tickIndices[-1] = numVals - 1
+    ticks = []
+    tickLabels = []
+    for ii in tickIndices:
+        ticks.append(gIndices[ii])
+        date = dates[ii]
+        if isinstance(date, np.datetime64):
+            date = date.astype(datetime)
+            if isinstance(date, int):
+                # remove nanoseconds
+                date = date / 1000000000
+                date = datetime.utcfromtimestamp(date)
+        if isinstance(date, datetime):
+            date = date.strftime("%m-%d %H:%M:%S")
+        # else assume date is a str
+        tickLabels.append(date)
+    return ticks, tickLabels
 
 
 def addLegends(fig: plt.figure, pos: int = 1) -> None:
